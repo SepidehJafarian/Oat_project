@@ -1,2 +1,2 @@
 # Oat_project
-oat project consisiting of kallisto mapping , DEG analysis and Enrichment analysis
+oat project consisiting of kallisto mapping , DEG analysis (in R) and Enrichment analysis
