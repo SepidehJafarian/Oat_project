@@ -1,0 +1,861 @@
+---
+title: "oat-DEGs analysis-no outlier2(2outliers removed)"
+author: "Sepideh"
+date: "2023-10-31"
+output: 
+  rmarkdown::html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: TRUE
+editor_options: 
+  chunk_output_type: inline
+  root.dir: "C:/Users/SepidehJafarian/Desktop/oat.project/sepideh-oat-rewrite/DEGS-timeseries-no out(2)"
+---
+
+
+
+```{r, setup, include=TRUE, echo=TRUE, eval=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+require("knitr")
+opts_knit$set(root.dir = "C:/Users/SepidehJafarian/Desktop/oat.project/sepideh-oat-rewrite/DEGS-timeseries-no out(2)")
+```
+```{r, include=TRUE}
+library(DESeq2)
+library(tximport)
+library(GenomicFeatures)
+library(rhdf5)
+library(geneplotter)
+library(limma)
+library(SummarizedExperiment)
+library(vsn)
+library(pheatmap)
+library(RColorBrewer)
+library(ggplot2)
+library(AnnotationDbi)
+library(ggbeeswarm)
+library(dplyr)
+set.seed(123)
+```
+
+
+
+Change the root directory and force it for all chunks
+
+```{r, include=TRUE}
+require("knitr")
+opts_knit$set(root.dir = "C:/Users/SepidehJafarian/Desktop/oat.project/sepideh-oat-rewrite/DEGS-timeseries-no out(2)")
+getwd()
+```
+
+Set the directory and read the required data
+
+```{r, include=TRUE, echo=TRUE }
+wd = "C:/Users/SepidehJafarian/Desktop/oat.project/sepideh-oat-rewrite/DEGS-timeseries-no out(2)"
+setwd(wd)
+getwd()
+```
+ 
+##  Accessing the file with
+### the counts( resulting from Kallisto, tsv files) without merged lists
+### reading the required file(data) 
+
+```{r, include=TRUE, echo=TRUE}
+infile <-  file.path(wd,"input_pc39.modified_no outlier 2.csv")
+data = read.table(infile, header=TRUE, sep = ',', stringsAsFactors=FALSE)
+head(data)
+```
+
+
+## Extracting the data
+### including only **filnemes** & **samle names**
+
+```{r, include=TRUE, echo=TRUE}
+quant_files <- data[,'FileName']
+names(quant_files) <- data[,'SampleName']
+
+head(quant_files)
+
+```
+## To check all samples and their counts exist
+### The results should **TRUE** if all are there
+
+```{r, include=TRUE, echo=TRUE}
+all(file.exists(quant_files))
+```
+## Loading gff3 files which includes the genes information
+### We need this file because the transcripts needs to be converted to the genes later on.
+
+```{r, include=TRUE, echo=TRUE}
+gtf_file <- "bingo.high.edit.gff3"
+file.exists(gtf_file)
+```
+## database creation
+### makeTxDbFromGFF from GenomicFeatures package. This function is specifically designed to create a **transcript database (TxDb) object from a GFF (General Feature Format)** file
+
+```{r, include=TRUE, echo=TRUE, eval=TRUE}
+library(GenomicFeatures)
+txdb <- makeTxDbFromGFF(gtf_file)
+str(txdb)
+```
+
+
+
+## Keytyps
+### Finding keytypes and column names of the transcript database (TxDb).We are going to filter the database by a key or set of keys in order to extract the information we want. Valid names for the key can be retrieved with the keytypes function.
+#### Select, columns and keys are used together to extract data from an AnnotationDb object
+#### The role of the keytypes function is to provide information about the available key types that can be used **to extract metadata or annotations**. This function returns the columns that user can specified in select function.
+
+
+```{r, include=TRUE, echo=TRUE}
+library(GenomicFeatures)
+library(AnnotationDbi)
+keytypes(txdb)
+columns(txdb)
+
+```
+## selection
+### if we have some keys, we can use select to extract them. By simply using appropriate argument values with select we can specify what keys we want to look up values for (keys), what we want returned back (columns) and the type of keys that we are passing in (keytype).
+####  **TXNAME typically refers to the transcript name associated with a genomic feature. It is a label or identifier that represents a specific transcript within a genomic region.**
+
+
+```{r, include=TRUE, echo=TRUE}
+library(GenomicFeatures)
+library(AnnotationDbi)
+k <- keys(txdb, keytype="TXNAME")
+tx_map <- AnnotationDbi::select(txdb, keys = k, columns="GENEID", keytype = "TXNAME")
+View(tx_map)
+```
+## restoring the original data
+
+```{r, include=TRUE, echo=TRUE}
+tx2gene <- tx_map
+head(tx2gene)
+write.csv(tx2gene,file="tx2gene.csv",row.names = FALSE,quote=FALSE)
+```
+
+## 	Importing transcript abundance datasets (getting counts from abundance=scaledTPM)
+###  1: file= quant_files: a character vector of filenames for the transcript-level abundances
+### 	2: a two-column data.frame linking transcript id (column 1) to gene id (column 2). the column names are not relevant, but this column order must be used. this argument is required for gene-level summarization, and the tximport vignette describes how to construct this data.frame
+
+
+
+```{r, include=TRUE, echo=TRUE}
+library(tximport)
+txi <- tximport(quant_files,type="kallisto",tx2gene = tx2gene)
+#head(txi)
+View(txi$counts)
+names(txi)
+str(txi)
+```
+
+## To get the results from tximport(txi) into DESeq2 (function from tximport package)
+### Takes the results of tximport (counts data) 
+#### colData which is about the columns in my count data- the way our count data is formatted- (data about the columns in count data (samples)). that is why the sample info needs to be provided at first.
+####assigning the column name into rowname
+ 
+
+```{r, include=TRUE, echo=TRUE}
+sampleinfo <- read.delim(infile, sep=',')
+sampleinfo
+rownames(sampleinfo) <- sampleinfo$SampleName
+head(sampleinfo)
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+all(rownames(sampleinfo) == colnames(txi$counts))
+```
+
+```{r, include=TRUE, echo=TRUE}
+sampleinfo$resistance <- as.factor(sampleinfo$resistance)
+sampleinfo$timepoint <- as.factor(sampleinfo$timepoint)
+str(sampleinfo)
+```
+
+
+## construct a DESeqDataSet
+###  We use a design formula that models the treatments difference at time 0, the difference over time, and any treatment differences over time (the interaction term resistance:timepoint).
+
+
+```{r, include=TRUE, echo=TRUE}
+library(DESeq2)
+dds<- DESeqDataSetFromTximport(txi, colData=sampleinfo, design= ~resistance+timepoint+resistance:timepoint)
+```
+
+
+
+
+```{r, include=TRUE, echo=TRUE}
+dds <- estimateSizeFactors(dds)
+```
+
+
+
+## difference between txi & dds
+### counts allows us to extract the count data from dseqdata and will return count matrix (which is the results of tximport)
+#### counts from DESeq are rounded wihile deseq works with integer data
+
+
+```{r, include=TRUE, echo=TRUE}
+counts(dds)[1:20, 1:10] # but rounded 
+txi$counts[1:20, 1:10] # not rounded
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+colData(dds)
+```
+
+
+
+```{r, include=TRUE, echo=TRUE}
+tpm <- txi$abundance
+write.csv(tpm, file="02_tpm_values.timeseries.csv",quote=FALSE)
+
+```
+
+
+## filtering non-zero counts
+### to identify rows (genes or features) in the GeneCounts object that have nonzero counts in **all samples**. It can be useful for filtering out rows with no expression across all samples.
+#### Removing the zero counts...based on the factorsize some rows will be returned as zero(due to the geometric mean and reatios)..now wee need to have only non zero ones
+#### For this, we make a function:  It takes a vector x (representing each row of GeneCounts) as input and checks if all the values in x are greater than zero using the all() function. The all() function returns TRUE if all the values in x are TRUE; otherwise, it returns FALSE.
+#### 1 means for raws. 2 means for columns..here we need raws as genes
+##### The variable **idx.nz** will be a logical vector indicating for each gene whether all the counts in that gene's row are greater than zero (TRUE) or not (FALSE).
+
+
+
+
+```{r, include=TRUE, echo=TRUE}
+GeneCounts <- counts(dds)
+idx.nz <- apply(GeneCounts, 1, function(x) { all(x > 0)})
+#idx.nz
+sum(idx.nz)
+head(GeneCounts[idx.nz, ])
+### extracting only none zero elements
+nz.counts <- subset(GeneCounts, idx.nz)
+```
+
+## Data Visualization {.tabset}
+
+### plot normalized and un-normalized counts in different ways to visualize {.tabset}
+#### multiecdf{.tabset}
+
+```{r, include=TRUE, echo=TRUE}
+library(geneplotter)
+
+un_mc<-  multiecdf(counts(dds, normalized = F)[idx.nz ,],xlab="mean counts", xlim=c(0, 1000), main="un-normalized counts")
+print(un_mc, with=50, height=40, cex.axis=1)
+
+
+n_mc<-  multiecdf(counts(dds, normalized = T)[idx.nz ,],xlab="mean counts", xlim=c(0, 1000),  main="normalized counts")
+print(n_mc, with=50, height=40, cex.axis=1)
+
+```
+#### density plot {.tabset}
+```{r, include=TRUE, echo=TRUE}
+
+multidensity(counts(dds, normalized = F)[idx.nz ,],xlab="mean counts", xlim=c(0, 1000), main="un-normalized counts")
+multidensity(counts(dds, normalized = T)[idx.nz ,],xlab="mean counts", xlim=c(0, 1000), main="normalized counts")
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+
+png(file = paste(wd, "before_normalization1.png", sep='/'),width=6,height=6,units="in",res=1200)
+multidensity( counts(dds, normalized = F)[idx.nz ,], xlab="mean counts", xlim=c(0, 1000))
+dev.off()
+
+png(file = paste(wd, "after_normalization1.png", sep='/'),width=6,height=6,units="in",res=1200)
+multidensity( counts(dds, normalized = T)[idx.nz ,], xlab="mean counts", xlim=c(0, 1000))
+dev.off()
+```
+
+
+
+
+
+## low count gees filtration
+### While it is not necessary to pre-filter low count genes before running the DESeq2 functions, there are two reasons which make pre-filtering useful: by removing rows in which there are very few reads, we reduce the memory size of the dds data object, and we increase the speed of count modeling within DESeq2. It can also improve visualizations, as features with no information for differential expression are not plotted in dispersion plots or MA-plots. 
+#### **to filter out low-count genes that have total counts below a specified threshold (in this case, 10). It helps to focus on genes with higher expression levels for downstream analysis.**
+
+#### selection of the genes with the normalized counts(total counts) more then 10 (treshold)
+
+
+
+
+
+```{r, include=TRUE, echo=TRUE}
+library(limma)
+dds <- dds[ rowSums(counts(dds)) > 10, ]
+
+```
+
+## estimate dispersions and plot the main one. **Dispersion**: Variability within the groups
+
+```{r, include=TRUE, echo=TRUE}
+dds <- estimateDispersions(dds)
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+plotDispEsts(dds)
+```
+### Making log10 transformation to check the distribution of libray size
+
+
+```{r, include=TRUE, echo=TRUE}
+countdata <- assay(dds)
+logcounts <- log10(countdata+1)
+
+```
+
+###make a colour vector
+
+```{r, include=TRUE, echo=TRUE}
+
+statusCol <- c("0h"="#66C2A5", "6h"="#FFD92F","12h"="#8DA0CB", "1d"="#E78AC3", "2d"="#A6D854")
+
+```
+
+
+#### Check distributions of samples using boxplots
+#### ##### Let's add a blue horizontal line that corresponds to the median logCPM
+
+
+
+```{r, include=TRUE, echo=TRUE}
+par(mar=c(10,4,1,1)+.1)
+boxplot(logcounts, xlab="", ylab="Log10(Counts)",las=2, col=statusCol)
+abline(h=median(as.matrix(logcounts)), col="blue")
+```
+
+
+
+## Transformation Explanation:
+
+####### DESeqs "rlog transformation" replaces the VST we had before. It transforms the average of the genes across samples to a log2 scale but "pulls in" those genes for which the evidence for strong fold changes is weak due to low counts. 
+#### blind=FALSE means that differences between cell lines and treatment should not add to the variance-mean profile of the experiment. However, the experimental design is not used directly in the transformation, only in estimating the global amount of variability in the counts. ###
+
+
+
+```{r, include=TRUE, echo=TRUE}
+
+vsd <- varianceStabilizingTransformation(dds, blind=FALSE)
+write.csv(assay(vsd),file=paste(wd, "vsd.timeseries.csv", sep='/'))
+```
+
+
+
+```{r, include=TRUE, echo=TRUE}
+png(file = paste(wd, "library size distribution_timeseries.png", sep='/'),width=20,height=10,units="in",res=1200)
+par(mar=c(10,4,1,1)+.1)
+boxplot(assay(vsd), xlab="", ylab="Log2 counts per million",las=2,main="Normalised Distributions",  col=statusCol)
+# Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(assay(vsd)), col="blue")
+dev.off()
+```
+
+## Ordered 1000 High variance genes after the variance stabilizing 
+
+```{r, include=TRUE, echo=TRUE}
+topVargenes_dds <- head(order(rowVars(assay(vsd)),decreasing=TRUE),1000)
+write.csv(assay(vsd[topVargenes_dds, ]),file=paste(wd, "vsd_timeseries_HV.csv", sep='/'))
+
+```
+
+
+## Highe variance genes ordered
+
+```{r, include=TRUE, echo=TRUE}
+
+topVargenes_dds <- order(rowVars(assay(vsd)),decreasing=TRUE)
+write.csv(assay(vsd[topVargenes_dds, ]),file=paste(wd, "vsd_ordered_timeseries_HV.csv", sep='/'))
+
+```
+
+## Normalization visualization{.tabset}
+### comparison of two methods (vsd and rlog) for one of the samples to see the difference
+
+
+```{r, include=TRUE, echo=TRUE}
+par( mfrow = c( 1, 2 ) )
+plot(log2(counts(dds, normalized=TRUE)[,1:2] + 1), pch=16, cex=0.3, main="log2_normalized_timeseries")
+plot(assay(vsd)[,1:2],pch=16, cex=0.3, main="vsd normalized_timeseries")
+
+```
+
+## to identify rows (genes) that have at least one count greater than zero across all samples.
+
+### compare normalized, counts, rlog transformed counts and vst counts 
+###  the purpose of the first command is to identify rows (genes) that have **at least** one count greater than zero across all samples.
+### includes genes with ***at least one nonzero count across all samples.***
+
+```{r, include=TRUE, echo=TRUE}
+vsd <- varianceStabilizingTransformation(dds, fitType="local")
+notAllZero <- (rowSums(counts(dds))>0)
+```
+
+## Visualization {.tabset}
+
+### vsd plot {.tabset}
+
+```{r, include=TRUE, echo=TRUE}
+library(vsn)
+png(file = paste(wd, "vsd plot-timeseries.png", sep='/'),width=8,height=8,units="in",res=1200)
+meanSdPlot(assay(vsd[notAllZero,]))
+dev.off()
+```
+
+## plot top 20 genes of normalized counts, rlog transformed values and vst values for visualization
+
+
+```{r, include=TRUE, echo=TRUE}
+select <- order(rowMeans(counts(dds,normalized=TRUE)),	decreasing=TRUE)[1:20]
+```
+
+
+## Normtransform {.tabset} 
+
+### The normTransform() function in the limma package is used to perform normalization and transformation on gene expression data. It is typically applied after preprocessing steps such as background correction, normalization, and log transformation.
+
+
+
+```{r, include=TRUE, echo=TRUE}
+df <- as.data.frame(colData(dds)[,c("line","timepoint")])
+df2 <- as.data.frame(colData(dds)[,c("resistance","timepoint")])
+```
+
+### vsd heatmap{.tabset}
+
+
+```{r, include=TRUE, echo=TRUE}
+png(file = paste(wd, "heatmap_samples_sl_timeseries.png", sep='/'),width=8,height=8,units="in",res=1200)
+
+pheatmap(assay(vsd)[select,], cluster_rows=FALSE, show_rownames=FALSE,cluster_cols=FALSE, annotation_col=df)
+
+dev.off()
+
+png(file = paste(wd, "heatmap_samples_s_timeseries.png", sep='/'),width=8,height=8,units="in",res=1200)
+pheatmap(assay(vsd)[select,], cluster_rows=FALSE, show_rownames=FALSE,cluster_cols=FALSE, annotation_col=df2)
+dev.off()
+
+
+```
+
+## plot a heatmap of sample distances
+
+```{r, include=TRUE, echo=TRUE}
+library(pheatmap)
+library(RColorBrewer)
+options(repr.plot.width = 10, repr.plot.height = 20, repr.plot.res = 100)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$resistance, vsd$timepoint, vsd$line, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix, clustering_distance_rows=sampleDists,clustering_distance_cols=sampleDists,col=colors, main="heatmap_samples_distance_timeseries")
+```
+
+
+### to save the png for better quality
+```{r, include=TRUE, echo=TRUE}
+png(file = paste(wd, "heatmap_samplesdistance__no outlier-timeseries.png", sep='/'),width=8,height=8,units="in",res=1200)
+pheatmap(sampleDistMatrix, clustering_distance_rows=sampleDists,clustering_distance_cols=sampleDists,col=colors)
+dev.off()
+```
+## PCA 
+### plot pca with each sample in different color
+
+
+```{r, include=TRUE, echo=TRUE}
+pcaData <- plotPCA(vsd, intgroup = c("timepoint", "resistance","line"), returnData=TRUE, ntop=48370)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+```
+
+
+
+```{r, include=TRUE, echo=TRUE}
+sample_names<- pcaData$name
+#sample_names<- gsub("BMW_", "", sample_names)
+sample_names
+class(sample_names)
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+library(ggplot2)
+png(file = paste(wd, "PCA-labled-no outlier-timeseries.png", sep='/'),width=6,height=6,units="in",res=1200)
+pca_plot<- ggplot(pcaData, aes(PC1, PC2, shape=line, color=timepoint,fill=resistance)) + 
+  geom_point(size=3, stroke=1, position=position_jitter(h=0.5, w=0.5), alpha=0.8) +
+scale_fill_manual(values = c("sus" = "white", "res" = "black")) +
+xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+ylab(paste0("PC2: ",percentVar[2],"% variance")) + scale_shape_manual(values = c(22,23,24,21)) +
+  #scale_color_manual(values=c("0h"="#66C2A5", "6h"="#FFD92F","12h"="#8DA0CB", "1d"="#E78AC3", "2d"="#A6D854"))+
+  guides(fill = guide_legend(override.aes = list(shape = 21))) +
+coord_fixed()
+pca_plot + geom_text(aes(label = sample_names), nudge_x =-20, nudge_y = 10, size=3)
+dev.off()
+```
+```{r, include=TRUE, echo=TRUE}
+library(ggplot2)
+library(plotly)
+p<- ggplot(pcaData, aes(PC1, PC2, shape=line, color=timepoint,fill=resistance)) + 
+  geom_point(size=3, stroke=1, position=position_jitter(h=0.5, w=0.5), alpha=0.8) +
+scale_fill_manual(values = c("sus" = "white", "res" = "black")) +
+xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+ylab(paste0("PC2: ",percentVar[2],"% variance")) + scale_shape_manual(values = c(22,23,24,21)) +
+  #scale_color_manual(values=c("0h"="#66C2A5", "6h"="#FFD92F","12h"="#8DA0CB", "1d"="#E78AC3", "2d"="#A6D854"))+
+  guides(fill = guide_legend(override.aes = list(shape = 21))) +
+coord_fixed()
+p_plotly <- ggplotly(p)
+p_plotly
+
+```
+
+### To save plot pca cultivars clustered
+```{r, include=TRUE, echo=TRUE}
+library(ggplot2)
+png(file = paste(wd, "PCA-no outlier-timeseries.png", sep='/'),width=6,height=6,units="in",res=1200)
+ggplot(pcaData, aes(PC1, PC2, shape=line, color=timepoint,fill=resistance)) + 
+  geom_point(size=3, stroke=1, position=position_jitter(h=0.5, w=0.5), alpha=0.8) +
+scale_fill_manual(values = c("sus" = "white", "res" = "black")) +
+xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+ylab(paste0("PC2: ",percentVar[2],"% variance")) + scale_shape_manual(values = c(22,23,24,21)) +
+  #scale_color_manual(values=c("0h"="#66C2A5", "6h"="#FFD92F","12h"="#8DA0CB", "1d"="#E78AC3", "2d"="#A6D854"))+
+  guides(fill = guide_legend(override.aes = list(shape = 21))) +
+coord_fixed()
+dev.off()
+```
+
+
+## *differential expression analysis*
+### The following chunk of code performs a likelihood ratio test, where we remove the strain-specific differences over time. Genes with small p values from this test are those which at one or more time points after time 0 showed a resistance-specific effect.
+
+### For a control and treatment time series, one can use a design formula containing the condition factor, the time factor, and the interaction of the two. In this case, using the likelihood ratio test with a reduced model which does not contain the interaction terms will test whether the condition induces a change in gene expression at any time point after the reference level time point (time 0)
+
+```{r, include=TRUE, echo=TRUE}
+library(DESeq2)
+dds <- DESeq(dds, test="LRT", reduced= ~resistance+timepoint )
+```
+
+
+## build results
+
+```{r, include=TRUE, echo=TRUE}
+res <- results(dds)
+#head(res[order(res$padj),], 4)
+resultsNames(dds)
+```
+
+
+
+```{r, include=TRUE, echo=TRUE}
+#png(file=paste(wd, "counts comparison_no outlier_timeseries graph.png", sep='/') ,width=10,height=8,units="in",res=1200)	
+oat <- plotCounts(dds, which.min(res$padj), 
+                   intgroup = c("resistance","timepoint"), returnData = TRUE)
+
+#oat$timepoint <- as.numeric(as.character(oat$timepoint))
+oat <- oat[complete.cases(oat), ]
+ggplot(oat,
+  aes(x = timepoint, y = count, color = resistance, group = resistance)) + 
+  geom_point() + stat_summary(fun.y=mean, geom="line") +
+  scale_y_log10()
+
+#dev.off()
+```
+
+```{r, include=TRUE, echo=TRUE}
+library(ggpl)
+
+oat <- plotCounts(dds, which.min(res$padj), 
+                   intgroup = c("resistance","timepoint"), returnData = TRUE)
+
+#oat$timepoint <- as.numeric(as.character(oat$timepoint))
+oat <- oat[complete.cases(oat), ]
+ggplot(oat,
+  aes(x = timepoint, y = count, color = resistance, group = resistance)) + 
+  geom_point() + stat_summary(fun.y=mean, geom="line") +
+  scale_y_log10()
+
+
+```
+
+
+### We can furthermore cluster significant genes by their profiles. We extract a matrix of the log2 fold changes using the coef function.These coefficients represent the log2 fold changes between groups or conditions in your experiment.  Each coefficient corresponds to a specific contrast or comparison between groups, factors, or levels defined in design formula. Note that these are the maximum likelihood estimates (MLE). For shrunken LFC, one must obtain them one coefficient at a time using lfcShrink
+
+
+```{r, include=TRUE, echo=TRUE}
+betas <- coef(dds)
+colnames(betas)
+class(betas)
+#print(betas)
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+topGenes <- head(order(res$padj),30)
+topGenes
+```
+
+```{r, include=TRUE, echo=TRUE}
+library(pheatmap)
+
+topGenes <- head(order(res$padj),30)
+mat <- betas[topGenes, -c(1,2)]
+thr <- 2 
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+pheatmap(mat, breaks=seq(from=-thr, to=thr, length=101),
+         cluster_rows = TRUE , cluster_col=FALSE)
+
+
+
+```
+
+
+
+
+```{r, include=TRUE, echo=TRUE}
+
+
+topGenes <- head(order(res$padj),30)
+mat <-betas[topGenes, -c(1)]
+thr <- 2
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+pheatmap(mat, breaks=seq(from=-thr, to=thr, length=101),
+         cluster_rows = TRUE , cluster_col=FALSE)
+
+
+```
+
+### to save it
+```{r, include=TRUE, echo=TRUE}
+png(file=paste(wd, "heatmap_selected_genes-timeseries_comparison.png", sep='/') ,width=10,height=8,units="in",res=1200)	
+pheatmap(mat, breaks=seq(from=-thr, to=thr, length=101),
+         cluster_rows = TRUE , cluster_col=FALSE)
+dev.off()
+```
+
+
+##	build results for significant genes of the candidate genes showing a differential expression in VB in comparison to GfGa
+#### mapIds(): This function maps gene identifiers (GENEID) from the res results to data in an annotation database (txdb) based on specific key-value pairs.
+
+
+
+
+```{r, include=TRUE, echo=TRUE}
+library("AnnotationDbi")
+res$CHROM <- mapIds(txdb,keys=row.names(res),column="CDSCHROM", keytype="GENEID", multiVals="first")
+res$CDSNAME <- mapIds(txdb,keys=row.names(res),column="CDSNAME", keytype="GENEID", multiVals="first")
+res$CDSSTART <- mapIds(txdb,keys=row.names(res),column="CDSSTART", keytype="GENEID", multiVals="first")
+res$CDSEND <- mapIds(txdb,keys=row.names(res),column="CDSEND", keytype="GENEID", multiVals="first")
+res$CDSSTRAND <- mapIds(txdb,keys=row.names(res),column="CDSSTRAND", keytype="GENEID", multiVals="first")
+res$symbol <- mcols(res)$symbol
+```
+
+## Exporting only the results which pass an adjusted p value threshold 0.05
+
+```{r, include=TRUE, echo=TRUE}
+resSig <- subset(res, padj =< 0.05)#extract subset
+resSig <- as.data.frame(resSig)#build a data frame from subset to write it out
+write.csv(resSig,  file=paste(wd, "results_sig_timeseries analysis.csv", sep='/'))
+```
+
+
+
+## up regulated and downregulated genes
+
+
+
+```{r, include=TRUE, echo=TRUE}
+up <- subset(res, padj <= 0.05& log2FoldChange >= 1)
+write.csv(up,  file=paste(wd, "results_timeseries_0.05padj_log2fc1_up.csv", sep='/'))
+
+down <- subset(res, padj <= 0.05 & log2FoldChange =< -1)
+write.csv(down,  file=paste(wd, "results_timeseries_0.05padj_log2fc1_down.csv", sep='/'))
+```
+
+
+## Plotting results
+
+```{r, include=TRUE, echo=TRUE}
+fig.show='hold'
+#png(file=paste(wd, "MA plot-timeseries_comparison.png", sep='/') ,width=10,height=8,units="in",res=1200)	
+DESeq2::plotMA(res)
+#dev.off()
+
+```
+
+```{r, include=TRUE, echo=TRUE}
+#hist(res$pvalue[res$baseMean > 1], breaks=0:20/20, col="grey50", border="white")
+```
+
+## genes with the most variation of counts
+
+```{r, include=TRUE, echo=TRUE}
+#topVarGenes <- head(order(rowVars(assay(vsd)),decreasing=TRUE),30)
+```
+
+
+
+### genes with padj <= 0.05:
+
+```{r, include=TRUE, echo=TRUE}
+resOrdered <- res[order(res$padj,decreasing=FALSE),]#order genes by padj
+selected_genes<-rownames(subset(resOrdered, padj <= 0.05))[1:30]
+
+```
+
+
+
+## extracting all significant genes regarding their up or down regulation
+
+```{r, include=TRUE, echo=TRUE}
+significant_genes <- subset(res, padj <= 0.05 & abs(log2FoldChange) > 1)
+write.csv(significant_genes,  file=paste(wd , "significant genes (up&down) for timeseries.csv", sep="/"))
+```
+
+
+## extract the name or id of those significant genes
+
+
+
+```{r, include=TRUE, echo=TRUE}
+significant_genes_id <-  rownames(significant_genes)
+significant_genes_id
+```
+
+## heirarchical clustering of significant genes
+### first we need to extract our normalized counts
+
+
+```{r, include=TRUE, echo=TRUE}
+library(DESeq2)
+normalized_counts<- counts(dds, normalized=TRUE)
+
+clustering_data <- normalized_counts[significant_genes_id ,]
+head(clustering_data, 5)
+#rownames(clustering_data) <- gsub("AVESA\\.00003a\\.r1\\.", " ", rownames(clustering_data))
+#clustering_data <- gsub("AVESA.00003a.r1.", " gene_",rownames(clustering_data))
+head(clustering_data)
+
+
+```
+
+
+
+
+```{r, include=TRUE, echo=TRUE}
+library(dendextend)
+```
+
+## Now we start to do the clustering
+
+```{r, include=TRUE, echo=TRUE}
+ylim=c(0, 350000)
+ybreaks <- seq(0, 350000, by = 10000)
+any_missing <- any(is.na(clustering_data))
+any_missing
+```
+
+```{r, include=TRUE, echo=TRUE}
+options(repr.plot.width = 5, repr.plot.height = 10, repr.plot.res = 100)
+png(file=paste(wd, "clustered_significant genes_timeseries.png", sep='/') ,width=15,height=10,units="in",res=1200)	
+par(mar=c(11,4,2,3))
+hclust_result <- as.dendrogram(hclust(dist(clustering_data, method="euclidean")))
+
+
+hclust_result %>%
+  set("leaves_pch", 8)%>%
+  set("labels_cex", 0.9)%>% #font size of the xaxis
+  set("branches_lwd",3)%>%
+  color_branches(k=5)%>%
+  #raise.dendrogram(-1)%>%
+
+  plot(axis=FALSE,yaxt = "n",  main="clustered_significant genes_timeseries3", ylim=ylim) #ylim =ylim)
+# axis(2, at = ybreaks, labels = ybreaks)
+ # plot(xaxis = FALSE, hclust_result, labels = FALSE, size = 1)
+  
+  
+dev.off()
+
+```
+
+
+```{r, include=TRUE, echo=TRUE}
+#library(ggplot2)
+#plot_folder <- file.path(getwd(), "gene_plots")
+#for ( gene_id  in significant_genes_id) {
+
+  #oat <- plotCounts(dds, gene_id , intgroup = c("resistance", "timepoint"), returnData = TRUE)
+ # oat <- oat[complete.cases(oat), ]
+  
+ # p <- ggplot(oat, aes(x = timepoint, y = count, color = resistance, group = resistance)) +
+ #   geom_point() + 
+  #  stat_summary(fun.y = mean, geom = "line") +
+  #  scale_y_log10()+
+  #  ggtitle(gene_id) 
+#ggsave(file.path(plot_folder, paste0(gene_id, ".png")), plot = p)
+ # print(p)
+#}
+
+```
+
+
+
+```{r, include=TRUE, echo=TRUE}
+library(ggplot2)
+custom_timepoint_order <- c("0h", "6h", "12h", "1d", "2d")
+plot_folder <- file.path(getwd(), "gene_plots")
+for ( gene_id  in significant_genes_id) {
+
+  oat <- plotCounts(dds, gene_id , intgroup = c("resistance", "timepoint"), returnData = TRUE)
+  oat <- oat[complete.cases(oat), ]
+  oat$timepoint <- factor(oat$timepoint, levels = custom_timepoint_order)
+  p <- ggplot(oat, aes(x = timepoint, y = count, color = resistance, group = resistance)) +
+    geom_point() + 
+    stat_summary(fun.y = mean, geom = "line") +
+    scale_y_log10()+
+    ggtitle(gene_id) 
+ggsave(file.path(plot_folder, paste0(gene_id, ".png")), plot = p)
+  print(p)
+}
+
+```
+## Significant genes only between two sus and res conditiones.
+
+### Cook's Distance: Cook's distance is a measure used in statistical analysis to identify influential data points or outliers in a regression model. It quantifies how much a parameter estimate would change if a data point were removed from the analysis. Higher Cook's distances indicate data points that have a strong influence on the model.
+
+**Setting cooksCutoff to FALSE:** By setting cooksCutofftoFALSE`, you are essentially turning off the application of a Cook's distance cutoff. 
+
+###  **We are telling DESeq2 not to exclude or identify data points as outliers based on Cook's distance.**
+
+
+```{r, include=TRUE, echo=TRUE}
+resultsNames(dds)
+res2<- results(dds, cooksCutoff=FALSE, independentFiltering=FALSE)
+```
+
+```{r, include=TRUE, echo=TRUE}
+
+significant_genes2 <- subset(res, padj >= 0.05 & abs(log2FoldChange) >= 1 & res$contrast == "resistance_sus_vs_res")
+significant_genes2
+#write.csv(significant_genes2,  file=paste(wd , "significant genes _sus vs res_ timeseries.csv", sep="/"))
+```
+
+
+### NOTE: on p-values set to NA
+
+#### 1. If within a row, all samples have zero counts, the baseMean column will be zero, and the log2 fold change estimates, p-value and adjusted p-value will all be set to NA.
+
+#### 2. If a row contains a sample with an extreme count outlier then the p-value and adjusted p-value will be set to NA. These outlier counts are detected by Cook’s distance.
+
+#### 3. If a row is filtered by automatic independent filtering, for having a low mean normalized count, then only the adjusted p-value will be set to NA.
+
+
+
+
+
